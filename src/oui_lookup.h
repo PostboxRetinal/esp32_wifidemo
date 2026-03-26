@@ -51,15 +51,12 @@ inline const char* lookupVendorByMac(const uint8_t mac[6]) {
 }
 
 /**
- * @brief Consulta la API externa maclookup.app para resolver el fabricante por MAC.
+ * @brief Normaliza una dirección MAC para query a la API remota.
  *
- * Requisitos:
- * - STA con internet y IP asignada.
- * - “setInsecure” para WiFiClientSecure (demo solo).
- * - Formato de MAC normalizado (sin delimitadores, lowercase).
+ * Remueve delimitadores ":" y "-", y devuelve minúsculas.
  *
- * @param macStr MAC en formato "XX:XX:XX:XX:XX:XX".
- * @return Nombre del fabricante o código de error (NoRed/NoIP/NoMAC/ErrorMem/ErrorHTTP/RateLimit/NoAuth/ErrorJSON/Desconocido).
+ * @param mac MAC en formato "XX:XX:XX:XX:XX:XX" o análogo.
+ * @return MAC normalizada ("xxxxxxxxxxxx").
  */
 static String normalizeMacForApi(const String& mac) {
     String s = mac;
@@ -76,6 +73,12 @@ struct MacVendorCacheEntry {
     String vendor;
 };
 
+/**
+ * @brief Busca un vendor cached para una MAC normalizada.
+ *
+ * @param normalizedMac MAC normalizada (12 hex sin separadores).
+ * @return Vendor encontrado o String vacío si no existe.
+ */
 inline String lookupVendorFromCache(const String &normalizedMac)
 {
     static MacVendorCacheEntry cache[MAC_VENDOR_CACHE_SIZE];
@@ -87,6 +90,37 @@ inline String lookupVendorFromCache(const String &normalizedMac)
     return String();
 }
 
+/**
+ * @brief Resuelve fabricante con cache local + runtime, sin invocar red.
+ *
+ * @param mac MAC de 6 bytes.
+ * @param macStr MAC en formato "XX:XX:XX:XX:XX:XX".
+ * @return vendor si local o cache disponible, o "Desconocido".
+ */
+inline const char* lookupVendorCached(const uint8_t mac[6], const char* macStr)
+{
+    const char* local = lookupVendorByMac(mac);
+    if (strcmp(local, "Desconocido") != 0) {
+        return local;
+    }
+
+    String normalizedMac = normalizeMacForApi(String(macStr));
+    String cached = lookupVendorFromCache(normalizedMac);
+    if (cached.length() > 0) {
+        static String cachedVendor;
+        cachedVendor = cached;
+        return cachedVendor.c_str();
+    }
+
+    return "Desconocido";
+}
+
+/**
+ * @brief Inserta (o actualiza) un registro en la caché LRU circular de vendor.
+ *
+ * @param normalizedMac MAC normalizada (12 hex, sin separadores).
+ * @param vendor Nombre del fabricante o código de error de la consulta.
+ */
 inline void addVendorToCache(const String &normalizedMac, const String &vendor)
 {
     static MacVendorCacheEntry cache[MAC_VENDOR_CACHE_SIZE];
@@ -118,7 +152,7 @@ inline String lookupVendorRemote(const char* macStr) {
 
     WiFiClientSecure* client = new WiFiClientSecure;
     if (!client) return "ErrorMem";
-    client->setInsecure(); // demo/lab
+    client->setInsecure(); // sólo para consulta de OUI, no se transmitirá info sensible ni se mantendrá conexión persistente
 
     HTTPClient http;
     String url = String("https://api.maclookup.app/v2/macs/") + normalizedMac;
@@ -129,9 +163,9 @@ inline String lookupVendorRemote(const char* macStr) {
         http.addHeader("X-Api-Key", MACLOOKUP_API_KEY);
     }
 
-    http.setTimeout(15000); // 15s para redes lentas y HTTPS
+    http.setTimeout(5000);
 
-    const int maxRetries = 2;
+    const int maxRetries = 3;
     int code = 0;
     String payload;
 

@@ -7,7 +7,8 @@
 #include "oui_lookup.h"
 #include <vector>
 
-struct PendingMacLookup {
+struct PendingMacLookup
+{
     String macStr;
     uint8_t macRaw[6];
 };
@@ -16,9 +17,21 @@ static std::vector<PendingMacLookup> pendingMacLookups;
 
 const int LED_PIN = 2;
 
-// Dirección IP de AP, gateway y máscara de subred definidos con valores del archivo de configuración.
+static const bool LED_ACTIVE_LOW = false;
+
+/**
+ * @brief Dirección IP de AP (hardcoded desde wifi_config.h).
+ */
 const IPAddress AP_IP(AP_IP_OCTETS[0], AP_IP_OCTETS[1], AP_IP_OCTETS[2], AP_IP_OCTETS[3]);
+
+/**
+ * @brief Gateway de AP.
+ */
 const IPAddress AP_GATEWAY(AP_GATEWAY_OCTETS[0], AP_GATEWAY_OCTETS[1], AP_GATEWAY_OCTETS[2], AP_GATEWAY_OCTETS[3]);
+
+/**
+ * @brief Máscara de subred de AP.
+ */
 const IPAddress AP_SUBNET(AP_SUBNET_OCTETS[0], AP_SUBNET_OCTETS[1], AP_SUBNET_OCTETS[2], AP_SUBNET_OCTETS[3]);
 
 /**
@@ -65,15 +78,38 @@ String getStationIpByMac(const uint8_t mac[6])
  * @param times Numero de pulsos.
  * @param ms Duracion de cada estado en ms.
  */
+/**
+ * @brief Enciende el LED integrado respetando la polaridad de placa.
+ */
+void ledOn()
+{
+    digitalWrite(LED_PIN, LED_ACTIVE_LOW ? LOW : HIGH);
+}
+
+/**
+ * @brief Apaga el LED integrado respetando la polaridad de placa.
+ */
+void ledOff()
+{
+    digitalWrite(LED_PIN, LED_ACTIVE_LOW ? HIGH : LOW);
+}
+
+/**
+ * @brief Parpadea el LED n veces y deja el LED apagado al final.
+ *
+ * @param times Cantidad de pulsos.
+ * @param ms Duración de cada estado (ms).
+ */
 void blinkLed(int times, int ms = 80)
 {
     for (int i = 0; i < times; ++i)
     {
-        digitalWrite(LED_PIN, LOW);
+        ledOn();
         delay(ms);
-        digitalWrite(LED_PIN, HIGH);
+        ledOff();
         delay(ms);
     }
+    ledOff();
 }
 
 /**
@@ -97,7 +133,7 @@ void onWiFiEvent(void *arg, esp_event_base_t event_base, int32_t event_id, void 
             auto *evt = (wifi_event_ap_staconnected_t *)event_data;
             String mac = macToString(evt->mac);
             String ip = getStationIpByMac(evt->mac);
-            const char *vendor = lookupVendorByMac(evt->mac);  // local only
+            const char *vendor = lookupVendorCached(evt->mac, mac.c_str());
             Serial.printf("Cliente conectado: MAC=%s (%s), AID=%d, IP=%s, total=%d\n",
                           mac.c_str(), vendor, evt->aid, ip.c_str(), WiFi.softAPgetStationNum());
             blinkLed(2);
@@ -110,7 +146,7 @@ void onWiFiEvent(void *arg, esp_event_base_t event_base, int32_t event_id, void 
         {
             auto *evt = (wifi_event_ap_stadisconnected_t *)event_data;
             String mac = macToString(evt->mac);
-            const char *vendor = lookupVendorByMac(evt->mac);  // local only
+            const char *vendor = lookupVendorCached(evt->mac, mac.c_str());
             Serial.printf("Cliente desconectado: MAC=%s (%s), AID=%d, total=%d\n",
                           mac.c_str(), vendor, evt->aid, WiFi.softAPgetStationNum());
             blinkLed(1);
@@ -192,7 +228,7 @@ void initWiFiAP()
 void setup()
 {
     pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
+    ledOff();
     Serial.begin(115200);
     delay(100);
     initWiFiAP();
@@ -215,9 +251,17 @@ void loop()
                       WiFi.softAPIP().toString().c_str());
     }
 
-    // Procesar MAC lookup remoto en segundo plano para cada cliente conectado.
-    // Limitar rate para no saturar API cuando llegan muchos clientes de golpe.
+    /**
+     * @brief Procesar MAC lookup remoto en segundo plano para cada cliente conectado.
+     *
+     * Esto evita bloquear el evento de conexión y permite limitar la tasa de consultas
+     * para no saturar la API externa cuando se conectan muchos clientes simultáneos.
+     */
     static unsigned long lastLookupTime = 0;
+
+    /**
+     * @brief Intervalo mínimo entre consultas remotas (ms).
+     */
     const unsigned long lookupIntervalMs = 2000; // 1 consulta cada 2s
 
     if (!pendingMacLookups.empty() && WiFi.status() == WL_CONNECTED && (now - lastLookupTime >= lookupIntervalMs))
