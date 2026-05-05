@@ -4,7 +4,7 @@
 // Modifique estos valores directamente según sea necesario antes de compilar.
 
 constexpr char AP_SSID[] = "AP-ESP32-S3";
-constexpr char AP_PASSWORD[] = "SesionSeguridad1*";
+constexpr char AP_PASSWORD[] = "016374856";
 constexpr int AP_CHANNEL = 6;
 
 // Configuración de IP estática para el AP (misma subred que softAPIP)
