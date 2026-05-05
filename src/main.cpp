@@ -14,10 +14,16 @@ struct PendingMacLookup
 };
 
 static std::vector<PendingMacLookup> pendingMacLookups;
+static std::vector<String> seenClientMacs;
 
-const int LED_PIN = 2;
+const uint8_t RGB_LED_PIN = RGB_BUILTIN;
+const uint8_t RGB_LED_LEVEL = RGB_BRIGHTNESS;
+const unsigned long STA_DISCONNECT_LOG_INTERVAL_MS = 30000;
 
-static const bool LED_ACTIVE_LOW = false;
+static bool staDisconnectReasonSeen = false;
+static uint8_t lastStaDisconnectReason = 0;
+static unsigned long lastStaDisconnectLogTime = 0;
+static unsigned int suppressedStaDisconnects = 0;
 
 /**
  * @brief Dirección IP de AP (hardcoded desde wifi_config.h).
@@ -74,42 +80,126 @@ String getStationIpByMac(const uint8_t mac[6])
 }
 
 /**
- * @brief Parpadea el LED integrado.
- * @param times Numero de pulsos.
- * @param ms Duracion de cada estado en ms.
+ * @brief Apaga el LED RGB integrado.
  */
-/**
- * @brief Enciende el LED integrado respetando la polaridad de placa.
- */
-void ledOn()
+void rgbLedOff()
 {
-    digitalWrite(LED_PIN, LED_ACTIVE_LOW ? LOW : HIGH);
+    neopixelWrite(RGB_LED_PIN, 0, 0, 0);
 }
 
 /**
- * @brief Apaga el LED integrado respetando la polaridad de placa.
+ * @brief Enciende el LED RGB integrado con el color indicado.
  */
-void ledOff()
+void rgbLedOn(uint8_t red, uint8_t green, uint8_t blue)
 {
-    digitalWrite(LED_PIN, LED_ACTIVE_LOW ? HIGH : LOW);
+    neopixelWrite(RGB_LED_PIN, red, green, blue);
 }
 
 /**
- * @brief Parpadea el LED n veces y deja el LED apagado al final.
+ * @brief Parpadea el LED RGB n veces y lo deja apagado al final.
  *
  * @param times Cantidad de pulsos.
  * @param ms Duración de cada estado (ms).
  */
-void blinkLed(int times, int ms = 80)
+void blinkRgbLed(uint8_t red, uint8_t green, uint8_t blue, int times, int ms = 80)
 {
     for (int i = 0; i < times; ++i)
     {
-        ledOn();
+        rgbLedOn(red, green, blue);
         delay(ms);
-        ledOff();
+        rgbLedOff();
         delay(ms);
     }
-    ledOff();
+    rgbLedOff();
+}
+
+/**
+ * @brief Registra una MAC vista y reporta si ya era conocida en este arranque.
+ */
+bool registerSeenClient(const String &mac)
+{
+    for (const String &seenMac : seenClientMacs)
+    {
+        if (seenMac == mac)
+        {
+            return true;
+        }
+    }
+
+    seenClientMacs.push_back(mac);
+    return false;
+}
+
+/**
+ * @brief Nombre corto para motivos comunes de desconexión STA.
+ */
+const char *wifiReasonName(uint8_t reason)
+{
+    switch (reason)
+    {
+    case WIFI_REASON_BEACON_TIMEOUT:
+        return "BEACON_TIMEOUT";
+    case WIFI_REASON_NO_AP_FOUND:
+        return "NO_AP_FOUND";
+    case WIFI_REASON_AUTH_FAIL:
+        return "AUTH_FAIL";
+    case WIFI_REASON_ASSOC_FAIL:
+        return "ASSOC_FAIL";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        return "HANDSHAKE_TIMEOUT";
+    case WIFI_REASON_CONNECTION_FAIL:
+        return "CONNECTION_FAIL";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+/**
+ * @brief Reduce el ruido de reconexiones STA repetidas con el mismo motivo.
+ */
+void logStaDisconnect(uint8_t reason)
+{
+    unsigned long now = millis();
+    bool reasonChanged = !staDisconnectReasonSeen || reason != lastStaDisconnectReason;
+
+    if (reasonChanged)
+    {
+        suppressedStaDisconnects = 0;
+    }
+
+    if (reasonChanged || (now - lastStaDisconnectLogTime >= STA_DISCONNECT_LOG_INTERVAL_MS))
+    {
+        unsigned int totalEvents = suppressedStaDisconnects + 1;
+        if (totalEvents > 1)
+        {
+            Serial.printf("STA desconectado upstream, reason=%d (%s), eventos=%u\n",
+                          reason, wifiReasonName(reason), totalEvents);
+        }
+        else
+        {
+            Serial.printf("STA desconectado upstream, reason=%d (%s)\n",
+                          reason, wifiReasonName(reason));
+        }
+
+        staDisconnectReasonSeen = true;
+        lastStaDisconnectReason = reason;
+        lastStaDisconnectLogTime = now;
+        suppressedStaDisconnects = 0;
+        return;
+    }
+
+    ++suppressedStaDisconnects;
+}
+
+/**
+ * @brief Reinicia el resumen de desconexiones STA cuando el upstream conecta.
+ */
+void resetStaDisconnectLog()
+{
+    staDisconnectReasonSeen = false;
+    lastStaDisconnectReason = 0;
+    lastStaDisconnectLogTime = 0;
+    suppressedStaDisconnects = 0;
 }
 
 /**
@@ -132,11 +222,12 @@ void onWiFiEvent(void *arg, esp_event_base_t event_base, int32_t event_id, void 
         {
             auto *evt = (wifi_event_ap_staconnected_t *)event_data;
             String mac = macToString(evt->mac);
+            bool clientKnown = registerSeenClient(mac);
             String ip = getStationIpByMac(evt->mac);
             const char *vendor = lookupVendorCached(evt->mac, mac.c_str());
-            Serial.printf("Cliente conectado: MAC=%s (%s), AID=%d, IP=%s, total=%d\n",
-                          mac.c_str(), vendor, evt->aid, ip.c_str(), WiFi.softAPgetStationNum());
-            blinkLed(2);
+            Serial.printf("Cliente conectado: MAC=%s (%s), AID=%d, IP=%s, tipo=%s, total=%d\n",
+                          mac.c_str(), vendor, evt->aid, ip.c_str(), clientKnown ? "reconexion" : "nuevo", WiFi.softAPgetStationNum());
+            blinkRgbLed(0, clientKnown ? RGB_LED_LEVEL : 0, clientKnown ? 0 : RGB_LED_LEVEL, 2);
             PendingMacLookup pending;
             pending.macStr = mac;
             memcpy(pending.macRaw, evt->mac, 6);
@@ -149,12 +240,12 @@ void onWiFiEvent(void *arg, esp_event_base_t event_base, int32_t event_id, void 
             const char *vendor = lookupVendorCached(evt->mac, mac.c_str());
             Serial.printf("Cliente desconectado: MAC=%s (%s), AID=%d, total=%d\n",
                           mac.c_str(), vendor, evt->aid, WiFi.softAPgetStationNum());
-            blinkLed(1);
+            blinkRgbLed(RGB_LED_LEVEL, 0, 0, 1);
         }
         else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
         {
             auto *evt = (wifi_event_sta_disconnected_t *)event_data;
-            Serial.printf("STA desconectado upstream, reason=%d\n", evt->reason);
+            logStaDisconnect(evt->reason);
         }
     }
     else if (event_base == IP_EVENT)
@@ -162,6 +253,7 @@ void onWiFiEvent(void *arg, esp_event_base_t event_base, int32_t event_id, void 
         if (event_id == IP_EVENT_STA_GOT_IP)
         {
             auto *evt = (ip_event_got_ip_t *)event_data;
+            resetStaDisconnectLog();
             Serial.printf("STA conectado a upstream: IP=%s, GW=%s, mask=%s\n",
                           IPAddress(evt->ip_info.ip.addr).toString().c_str(),
                           IPAddress(evt->ip_info.gw.addr).toString().c_str(),
@@ -227,8 +319,8 @@ void initWiFiAP()
  */
 void setup()
 {
-    pinMode(LED_PIN, OUTPUT);
-    ledOff();
+    pinMode(RGB_LED_PIN, OUTPUT);
+    rgbLedOff();
     Serial.begin(115200);
     delay(100);
     initWiFiAP();

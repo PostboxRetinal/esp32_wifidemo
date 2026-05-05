@@ -1,0 +1,14 @@
+- This is a PlatformIO Arduino project for an ESP32-S3 N16R8 DevKitC-style board.
+- Treat `platformio.ini` as the source of truth for board, flash, partition, library, and serial settings.
+- Build with `pio run -e esp32-s3-devkitc-1`; upload with `pio run -e esp32-s3-devkitc-1 -t upload`.
+- Monitor serial output at 115200 baud; `monitor_dtr = 0` and `monitor_rts = 0` are intentional.
+- PlatformIO's built-in `esp32-s3-devkitc-1` profile is N8/no PSRAM; this repo overrides it for the N16R8 module with 16MB flash, 8MB OPI PSRAM, `default_16MB.csv`, and `qio_opi`.
+- The app entrypoint is `src/main.cpp`; it runs WiFi in `WIFI_MODE_APSTA`, starts a SoftAP, optionally connects STA upstream, logs AP client connect/disconnect events, and periodically prints AP status.
+- Network settings and credentials live in `src/wifi_config.h`; treat this file as sensitive and do not quote real SSIDs, passwords, or API keys in responses unless explicitly requested.
+- OUI/vendor lookup logic lives in `src/oui_lookup.h`; it uses a small local table, a runtime cache, and optional remote lookup via `maclookup.app` when upstream WiFi is connected.
+- `lib_deps` currently includes `bblanchon/ArduinoJson @ ^6.20.0`; keep ArduinoJson v6 API usage unless deliberately upgrading the dependency.
+- Preserve the existing Spanish comments and serial log style unless the user asks for language cleanup.
+- Current status LED code uses `LED_PIN = 2`; do not switch it to `RGB_BUILTIN` or `neopixelWrite()` unless the task is specifically about the onboard RGB LED.
+- `.pio/` and generated `.vscode/launch.json` / `.vscode/c_cpp_properties.json` are artifacts; do not hand-edit them.
+- `include/`, `lib/`, and `test/` are PlatformIO scaffold directories. Put shared headers in `include/`, private libraries in `lib/<name>/`, and tests in `test/` only when adding real tests.
+- `test/` currently only contains the default PlatformIO README scaffold, so `pio test` has no useful coverage yet.
